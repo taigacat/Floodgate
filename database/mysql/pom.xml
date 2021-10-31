@@ -13,14 +13,14 @@
   <artifactId>mysql</artifactId>
 
   <properties>
-    <mariadb-client.version>2.7.4</mariadb-client.version>
+    <mysql-client.version>8.0.25</mysql-client.version>
   </properties>
 
   <dependencies>
     <dependency>
-      <groupId>org.mariadb.jdbc</groupId>
-      <artifactId>mariadb-java-client</artifactId>
-      <version>${mariadb-client.version}</version>
+      <groupId>mysql</groupId>
+      <artifactId>mysql-connector-java</artifactId>
+      <version>${mysql-client.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>

@@ -25,6 +25,7 @@
 
 package org.geysermc.floodgate.database;
 
+import com.mysql.cj.jdbc.MysqlConnectionPoolDataSource;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.sql.Connection;
@@ -36,6 +37,7 @@ import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import javax.sql.PooledConnection;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.geysermc.floodgate.api.link.LinkRequest;
 import org.geysermc.floodgate.api.link.LinkRequestResult;
@@ -43,41 +45,44 @@ import org.geysermc.floodgate.database.config.MysqlConfig;
 import org.geysermc.floodgate.link.CommonPlayerLink;
 import org.geysermc.floodgate.link.LinkRequestImpl;
 import org.geysermc.floodgate.util.LinkedPlayer;
-import org.mariadb.jdbc.MariaDbPoolDataSource;
 
 public class MysqlDatabase extends CommonPlayerLink {
-    private MariaDbPoolDataSource pool;
+    private MysqlConnectionPoolDataSource dataSource;
 
     @Override
     public void load() {
         getLogger().info("Connecting to a MySQL-like database...");
         try {
-            Class.forName("org.mariadb.jdbc.Driver");
+            Class.forName("com.mysql.jdbc.Driver");
             MysqlConfig databaseconfig = getConfig(MysqlConfig.class);
 
-            pool = new MariaDbPoolDataSource();
+            dataSource = new MysqlConnectionPoolDataSource();
+            String host;
+            String port;
 
             String hostname = databaseconfig.getHostname();
             if (hostname.contains(":")) {
                 String[] split = hostname.split(":");
-
-                pool.setServerName(split[0]);
+                host = split[0];
                 try {
-                    pool.setPortNumber(Integer.parseInt(split[1]));
+                    port = split[1];
                 } catch (NumberFormatException exception) {
                     getLogger().info("{} is not a valid port! Will use the default port", split[1]);
+                    port = "3306";
                 }
             } else {
-                pool.setServerName(hostname);
+                host = hostname;
+                port = "3306";
             }
 
-            pool.setUser(databaseconfig.getUsername());
-            pool.setPassword(databaseconfig.getPassword());
-            pool.setDatabaseName(databaseconfig.getDatabase());
-            pool.setMinPoolSize(2);
-            pool.setMaxPoolSize(10);
+            dataSource.setUrl(String.format(
+                    "jdbc:mysql://%s:%s/%s",
+                    host, port, databaseconfig.getDatabase()
+            ));
+            dataSource.setUser(databaseconfig.getUsername());
+            dataSource.setPassword(databaseconfig.getPassword());
 
-            try (Connection connection = pool.getConnection()) {
+            try (Connection connection = dataSource.getConnection()) {
                 try (Statement statement = connection.createStatement()) {
                     statement.executeUpdate(
                             "CREATE TABLE IF NOT EXISTS `LinkedPlayers` ( " +
@@ -110,14 +115,21 @@ public class MysqlDatabase extends CommonPlayerLink {
     @Override
     public void stop() {
         super.stop();
-        pool.close();
+        try {
+            PooledConnection pooledConnection = dataSource.getPooledConnection();
+            if (pooledConnection != null) {
+                pooledConnection.close();
+            }
+        } catch (SQLException e) {
+            getLogger().error("Failed to close pooled connection.");
+        }
     }
 
     @Override
     @NonNull
     public CompletableFuture<LinkedPlayer> getLinkedPlayer(@NonNull UUID bedrockId) {
         return CompletableFuture.supplyAsync(() -> {
-            try (Connection connection = pool.getConnection()) {
+            try (Connection connection = dataSource.getConnection()) {
                 try (PreparedStatement query = connection.prepareStatement(
                         "SELECT * FROM `LinkedPlayers` WHERE `bedrockId` = ?"
                 )) {
@@ -142,7 +154,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     @NonNull
     public CompletableFuture<Boolean> isLinkedPlayer(@NonNull UUID playerId) {
         return CompletableFuture.supplyAsync(() -> {
-            try (Connection connection = pool.getConnection()) {
+            try (Connection connection = dataSource.getConnection()) {
                 try (PreparedStatement query = connection.prepareStatement(
                         "SELECT * FROM `LinkedPlayers` WHERE `bedrockId` = ? OR `javaUniqueId` = ?"
                 )) {
@@ -174,7 +186,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     }
 
     private void linkPlayer0(UUID bedrockId, UUID javaId, String javaUsername) {
-        try (Connection connection = pool.getConnection()) {
+        try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement query = connection.prepareStatement(
                     "INSERT INTO `LinkedPlayers` VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE " +
                             "`javaUniqueId`=VALUES(`javaUniqueId`), " +
@@ -195,7 +207,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     @NonNull
     public CompletableFuture<Void> unlinkPlayer(@NonNull UUID javaId) {
         return CompletableFuture.runAsync(() -> {
-            try (Connection connection = pool.getConnection()) {
+            try (Connection connection = dataSource.getConnection()) {
                 try (PreparedStatement query = connection.prepareStatement(
                         "DELETE FROM `LinkedPlayers` WHERE `javaUniqueId` = ? OR `bedrockId` = ?"
                 )) {
@@ -231,7 +243,7 @@ public class MysqlDatabase extends CommonPlayerLink {
             UUID javaId,
             String linkCode,
             String bedrockUsername) {
-        try (Connection connection = pool.getConnection()) {
+        try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement query = connection.prepareStatement(
                     "INSERT INTO `LinkedPlayersRequest` VALUES (?, ?, ?, ?, ?) " +
                             "ON DUPLICATE KEY UPDATE " +
@@ -254,7 +266,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     }
 
     private void removeLinkRequest(String javaUsername) {
-        try (Connection connection = pool.getConnection()) {
+        try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement query = connection.prepareStatement(
                     "DELETE FROM `LinkedPlayersRequest` WHERE `javaUsername` = ?"
             )) {
@@ -297,7 +309,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     }
 
     private LinkRequest getLinkRequest0(String javaUsername) {
-        try (Connection connection = pool.getConnection()) {
+        try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement query = connection.prepareStatement(
                     "SELECT * FROM `LinkedPlayersRequest` WHERE `javaUsername` = ?"
             )) {
@@ -322,7 +334,7 @@ public class MysqlDatabase extends CommonPlayerLink {
     }
 
     public void cleanLinkRequests() {
-        try (Connection connection = pool.getConnection()) {
+        try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement query = connection.prepareStatement(
                     "DELETE FROM `LinkedPlayersRequest` WHERE `requestTime` < ?"
             )) {
